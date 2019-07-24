@@ -1,26 +1,29 @@
 use std::io::Cursor;
 
 use actix_codec::{Decoder, Encoder};
-use bytes::BytesMut;
+use bytes::{BytesMut, Buf};
 
 use crate::error::ParseError;
 use crate::proto::QoS;
 use crate::{Packet, Publish};
 
+#[macro_use]
 mod decode;
 mod encode;
 
-use self::decode::*;
-use self::encode::*;
+use self::decode::{decode_variable_length, read_packet};
+
+/// Max possible packet size
+pub(crate) const MAX_PACKET_SIZE: u32 = 0xF_FF_FF_FF;
 
 bitflags! {
     pub struct ConnectFlags: u8 {
-        const USERNAME      = 0b1000_0000;
-        const PASSWORD      = 0b0100_0000;
-        const WILL_RETAIN   = 0b0010_0000;
-        const WILL_QOS      = 0b0001_1000;
-        const WILL          = 0b0000_0100;
-        const CLEAN_SESSION = 0b0000_0010;
+        const USERNAME    = 0b1000_0000;
+        const PASSWORD    = 0b0100_0000;
+        const WILL_RETAIN = 0b0010_0000;
+        const WILL_QOS    = 0b0001_1000;
+        const WILL        = 0b0000_0100;
+        const CLEAN_START = 0b0000_0010;
     }
 }
 
@@ -36,6 +39,19 @@ bitflags! {
 pub struct Codec {
     state: DecodeState,
     max_size: usize,
+    max_packet_size: Option<u32>,
+}
+
+pub(crate) trait EncodeLtd {
+    fn encoded_size(&self, limit: u32) -> u32;
+    fn encode(&self, buf: &mut BytesMut, size: u32) -> Result<(), ParseError>;
+}
+
+pub(crate) trait Encode {
+    fn encoded_size(&self) -> u32;
+
+    #[must_use]
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), ParseError>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +66,7 @@ impl Codec {
         Codec {
             state: DecodeState::FrameHeader,
             max_size: 0,
+            max_packet_size: None,
         }
     }
 
@@ -80,20 +97,21 @@ impl Decoder for Codec {
                     if src.len() < 2 {
                         return Ok(None);
                     }
-                    let fixed = src.as_ref()[0];
-                    match decode_variable_length(&src.as_ref()[1..])? {
+                    let src_slice = src.as_ref();
+                    let fixed = src_slice[0];
+                    match decode_variable_length(&src_slice[1..])? {
                         Some((remaining_length, consumed)) => {
                             // check max message size
-                            if self.max_size != 0 && self.max_size < remaining_length {
+                            if self.max_size != 0 && self.max_size < remaining_length as usize {
                                 return Err(ParseError::MaxSizeExceeded);
                             }
-                            src.split_to(consumed + 1);
+                            src.advance(consumed + 1);
                             self.state = DecodeState::Frame(FixedHeader {
-                                packet_type: fixed >> 4,
-                                packet_flags: fixed & 0xF,
+                                first_byte: fixed,
                                 remaining_length,
                             });
                             // todo: validate remaining_length against max frame size config
+                            let remaining_length = remaining_length as usize;
                             if src.len() < remaining_length {
                                 // todo: subtract?
                                 src.reserve(remaining_length); // extend receiving buffer to fit the whole frame -- todo: too eager?
@@ -106,11 +124,11 @@ impl Decoder for Codec {
                     }
                 }
                 DecodeState::Frame(fixed) => {
-                    if src.len() < fixed.remaining_length {
+                    if src.len() < fixed.remaining_length as usize {
                         return Ok(None);
                     }
-                    let packet_buf = src.split_to(fixed.remaining_length);
-                    let mut packet_cur = Cursor::new(packet_buf.freeze());
+                    let packet_buf = src.split_to(fixed.remaining_length as usize).freeze();
+                    let mut packet_cur = Cursor::new(packet_buf);
                     let packet = read_packet(&mut packet_cur, fixed)?;
                     self.state = DecodeState::FrameHeader;
                     src.reserve(2);
@@ -131,22 +149,21 @@ impl Encoder for Codec {
                 return Err(ParseError::PacketIdRequired);
             }
         }
-        let content_size = get_encoded_size(&item);
-        dst.reserve(content_size + 5);
-        write_packet(&item, dst, content_size);
+        let content_size =
+            item.encoded_size(self.max_packet_size.map_or(MAX_PACKET_SIZE, |v| v - 5)); // fixed header = 1, var_len(remaining.max_value()) = 4
+        dst.reserve(content_size as usize + 5);
+        item.encode(dst, content_size)?;
+
         Ok(())
     }
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) struct FixedHeader {
-    /// MQTT Control Packet type
-    pub packet_type: u8,
-    /// Flags specific to each MQTT Control Packet type
-    pub packet_flags: u8,
+    pub first_byte: u8,
     /// the number of bytes remaining within the current packet,
     /// including data in the variable header and the payload.
-    pub remaining_length: usize,
+    pub remaining_length: u32,
 }
 
 #[cfg(test)]
