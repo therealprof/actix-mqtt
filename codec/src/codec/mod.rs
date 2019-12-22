@@ -1,11 +1,8 @@
-use std::io::Cursor;
-
-use actix_codec::{Decoder, Encoder};
-use bytes::{BytesMut, Buf};
-
 use crate::error::ParseError;
 use crate::proto::QoS;
 use crate::{Packet, Publish};
+use actix_codec::{Decoder, Encoder};
+use bytes::{Buf, BytesMut};
 
 #[macro_use]
 mod decode;
@@ -128,8 +125,7 @@ impl Decoder for Codec {
                         return Ok(None);
                     }
                     let packet_buf = src.split_to(fixed.remaining_length as usize).freeze();
-                    let mut packet_cur = Cursor::new(packet_buf);
-                    let packet = read_packet(&mut packet_cur, fixed)?;
+                    let packet = read_packet(packet_buf, fixed)?;
                     self.state = DecodeState::FrameHeader;
                     src.reserve(2);
                     return Ok(Some(packet));

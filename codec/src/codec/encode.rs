@@ -871,8 +871,7 @@ mod tests {
 
         assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 0);
         p.encode(&mut v, 0).unwrap();
-        // write_fixed_header(&p, &mut v, 0);
-        assert_eq!(v, b"\xc0\x00".as_ref());
+        assert_eq!(&v[..2], b"\xc0\x00".as_ref());
 
         v.clear();
 
@@ -888,14 +887,14 @@ mod tests {
 
         assert_eq!(p.encoded_size(MAX_PACKET_SIZE), 264);
         p.encode(&mut v, 264);
-        assert_eq!(v, b"\x3d\x88\x02".as_ref());
+        assert_eq!(&v[..3], b"\x3d\x88\x02".as_ref());
     }
 
     macro_rules! assert_packet {
         ($p:expr, $data:expr) => {
             let mut v = BytesMut::with_capacity(1024);
-            $p.encode(&mut v, MAX_PACKET_SIZE);
-
+            let x = $p;
+            x.encode(&mut v, x.encoded_size(1024));
             assert_eq!(v.len(), $data.len());
             assert_eq!(v, &$data[..]);
             // assert_eq!(read_packet($data.cursor()).unwrap(), (&b""[..], $p));
@@ -964,7 +963,7 @@ mod tests {
                 topic: ByteString::from_static("topic"),
                 packet_id: None,
                 payload: Bytes::from_static(b"data"),
-                properties: PublishProperties::default(),
+                properties: PublishProperties::default()
             }),
             b"\x30\x0b\x00\x05topicdata"
         );

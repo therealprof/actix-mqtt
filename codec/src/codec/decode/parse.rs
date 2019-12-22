@@ -3,29 +3,21 @@ use crate::packet::*;
 use bytes::{buf::ext::Take, Buf, Bytes};
 use bytestring::ByteString;
 use std::convert::{TryFrom, TryInto};
-use std::io::Cursor;
 use std::num::{NonZeroU16, NonZeroU32};
 
 pub(crate) trait ByteBuf: Buf {
-    fn position(&self) -> u64;
-    fn inner_ref(&self) -> &Bytes;
+    fn inner_mut(&mut self) -> &mut Bytes;
 }
 
-impl ByteBuf for Cursor<Bytes> {
-    fn position(&self) -> u64 {
-        self.position()
-    }
-    fn inner_ref(&self) -> &Bytes {
-        self.get_ref()
+impl ByteBuf for Bytes {
+    fn inner_mut(&mut self) -> &mut Bytes {
+        self
     }
 }
 
-impl ByteBuf for Take<&mut Cursor<Bytes>> {
-    fn position(&self) -> u64 {
-        self.get_ref().position()
-    }
-    fn inner_ref(&self) -> &Bytes {
-        self.get_ref().get_ref()
+impl ByteBuf for Take<&mut Bytes> {
+    fn inner_mut(&mut self) -> &mut Bytes {
+        self.get_mut()
     }
 }
 
@@ -102,7 +94,7 @@ impl Parse for Bytes {
     fn parse<B: ByteBuf>(src: &mut B) -> Result<Self, ParseError> {
         let len = u16::parse(src)? as usize;
         ensure!(src.remaining() >= len, ParseError::InvalidLength);
-        Ok(take_bytes(src, len))
+        Ok(src.inner_mut().split_to(len))
     }
 }
 
@@ -134,11 +126,4 @@ impl Parse for SubscriptionOptions {
             retain_handling,
         })
     }
-}
-
-pub(crate) fn take_bytes<B: ByteBuf>(buf: &mut B, n: usize) -> Bytes {
-    let pos = buf.position() as usize;
-    let ret = buf.inner_ref().slice(pos..pos + n);
-    buf.advance(n);
-    ret
 }
